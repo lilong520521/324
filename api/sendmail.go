@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -128,13 +129,31 @@ func sendMail(req SendRequest) SendResponse {
 	usable := true
 	defer pool.putClient(cli, usable)
 
-	// 编码主题
+	// 编码主题（Base64）
 	encSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(req.Subject)))
+
+	// 编码正文（Base64）并拆分为每 76 字符一行（RFC 2045）
+	encodedBody := base64.StdEncoding.EncodeToString([]byte(req.Body))
+	chunkSize := 76
+	var bodyLines []string
+	for i := 0; i < len(encodedBody); i += chunkSize {
+		end := i + chunkSize
+		if end > len(encodedBody) {
+			end = len(encodedBody)
+		}
+		bodyLines = append(bodyLines, encodedBody[i:end])
+	}
+	finalBody := strings.Join(bodyLines, "\r\n")
+
+	// 构建邮件内容（声明编码方式）
 	msg := fmt.Sprintf(
-		"From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain;charset=utf-8\r\n\r\n%s",
-		req.From, req.To, encSubject, req.Body,
+		"From: %s\r\nTo: %s\r\nSubject: %s\r\n"+
+			"Content-Type: text/plain; charset=utf-8\r\n"+
+			"Content-Transfer-Encoding: base64\r\n\r\n%s",
+		req.From, req.To, encSubject, finalBody,
 	)
 
+	// 执行 SMTP 命令
 	if err = cli.Auth(pool.auth); err != nil {
 		usable = false
 		return SendResponse{Code: 1, Message: fmt.Sprintf("认证失败: %v", err)}
